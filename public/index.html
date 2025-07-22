@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OSC + p5.js Animation Selector</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; color: white; }
+    .ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.7);
+      padding: 10px;
+      border-radius: 10px;
+      font-family: sans-serif;
+    }
+    button, select {
+      margin-top: 5px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="ui">
+    <div>Sensor Value: <span id="sensor">0</span></div>
+    <div>Min: <span id="min">-</span></div>
+    <div>Max: <span id="max">-</span></div>
+    <button id="calibrateButton" onclick="calibrate()">Calibrate</button>
+    <label>
+      <input type="checkbox" id="filterToggle" checked> Filter
+    </label>
+    <div>
+      <label>Animation:</label>
+      <select id="animationSelect" onchange="changeAnimation()">
+        <option value="bouncingCircle">Bouncing Circle</option>
+        <option value="waveform">Waveform</option>
+        <option value="pulsingGrid">Pulsing Grid</option>
+        <option value="flyingBirds">Flying Birds</option>
+        <option value="custom">Custom (sketch.js)</option>
+
+      </select>
+    </div>
+  </div>
+
+  <script>
+    let sensorValue = 0;
+    let filteredValue = 0;
+    let lastOscTime = 0;
+    const oscTimeout = 2000;
+
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+
+    let circleX = 0;
+    let circleSpeed = 1;
+
+    let birds = [];
+    let clouds = [];
+
+    // Calibration
+    let calibrating = false;
+    let calibrationStartTime = 0;
+
+    function calibrate() {
+      const button = document.getElementById('calibrateButton');
+
+      if (!calibrating) {
+        calibrating = true;
+        calibrationStartTime = millis();
+        minVal = Infinity;
+        maxVal = -Infinity;
+        button.innerText = "Calibrating... (Click to Stop)";
+        console.log("Calibration started");
+      } else {
+        calibrating = false;
+        button.innerText = "Calibrate";
+        console.log("Calibration manually stopped");
+      }
+    }
+
+    function setupOsc() {
+      const socket = new WebSocket('ws://localhost:8081');
+      socket.onopen = () => console.log("WebSocket connected");
+
+      socket.onmessage = (msg) => {
+        const data = JSON.parse(msg.data);
+
+        if (data.address === '/EmotiBit/0/EDA') {
+          const args = data.args;
+          const value = Array.isArray(args) ?
+            args.reduce((a, b) => a + b, 0) / args.length : args[0];
+
+          sensorValue = value;
+          window.sensorValue = value;
+          lastOscTime = millis();
+
+          if (sensorValue < minVal) minVal = sensorValue;
+          if (sensorValue > maxVal) maxVal = sensorValue;
+
+          document.getElementById('sensor').innerText = sensorValue.toFixed(3);
+          document.getElementById('min').innerText = minVal.toFixed(3);
+          document.getElementById('max').innerText = maxVal.toFixed(3);
+        }
+      };
+    }
+
+    let animations = {};
+    let currentAnimation = null;
+
+    animations.bouncingCircle = function() {
+      background(20);
+      const size = scaleValue(50, 200);
+      const speedFactor = scaleValue(2, 10);
+
+      fill(0, 200, 255);
+      noStroke();
+      ellipse(circleX, height / 2, size, size);
+
+      circleX += circleSpeed * speedFactor;
+
+      if (circleX > width - size / 2 || circleX < size / 2) {
+        circleSpeed *= -1;
+      }
+    };
+
+    animations.waveform = function() {
+      background(10, 10, 30);
+      stroke(0, 255, 200);
+      strokeWeight(3);
+      noFill();
+
+      const amplitude = scaleValue(10, height * 0.4);
+      const frequency = map(filteredValue, 0, 1, 0.005, 0.03);
+
+      const midY = height / 2;
+      beginShape();
+      for (let x = 0; x < width; x += 10) {
+        const y = midY + sin((x + millis() * 0.5) * frequency) * amplitude;
+        vertex(x, y);
+      }
+      endShape();
+    };
+
+    animations.pulsingGrid = function() {
+      background(30);
+      const gridSize = 8;
+      const cellSize = width / gridSize;
+      const scale = scaleValue(0.5, 2.0);
+
+      noStroke();
+      fill(255, 100, 200);
+      for (let i = 0; i < gridSize; i++) {
+        for (let j = 0; j < gridSize; j++) {
+          const x = i * cellSize + cellSize / 2;
+          const y = j * cellSize + cellSize / 2;
+          const pulse = map(sin(millis() * 0.003), -1, 1, 0.95, 1.05);
+          const size = (cellSize * 0.4) * scale * pulse;
+          ellipse(x, y, size, size);
+        }
+      }
+    };
+
+    animations.flyingBirds = function() {
+      background(135, 206, 250);
+      drawClouds();
+
+      let speedFactor = scaleValue(0.5, 2.5);
+
+      for (let bird of birds) {
+        bird.x += bird.speed * speedFactor;
+        if (bird.x > width + 50) bird.x = -50;
+
+        let wingAngle = Math.sin((frameCount * 0.2) + bird.flapOffset) * Math.PI / 4;
+
+        push();
+        translate(bird.x, bird.y);
+        drawBird(wingAngle, bird.color);
+        pop();
+      }
+    };
+
+    function drawClouds() {
+      fill(255);
+      for (let cloud of clouds) {
+        cloud.x -= 0.5;
+        if (cloud.x < -100) cloud.x = width + 100;
+
+        ellipse(cloud.x, cloud.y, 60, 40);
+        ellipse(cloud.x + 20, cloud.y - 10, 50, 30);
+        ellipse(cloud.x - 20, cloud.y - 5, 40, 30);
+      }
+    }
+
+    function drawBird(wingAngle, c) {
+      fill(c);
+      ellipse(0, 0, 60, 30);
+      ellipse(25, -5, 20, 20);
+      fill(255, 204, 0);
+      triangle(35, -5, 45, -2, 35, 2);
+      fill(0);
+      ellipse(22, -7, 4, 4);
+
+      fill(c);
+      drawWing(10, -15, -wingAngle);
+      drawWing(10, -15, wingAngle);
+    }
+
+    function drawWing(x, y, angle) {
+      push();
+      translate(x, y);
+      rotate(angle);
+      beginShape();
+      vertex(0, 0);
+      vertex(-40, -15);
+      vertex(-60, 0);
+      vertex(-40, 15);
+      endShape(CLOSE);
+      pop();
+    }
+
+
+let customRunning = false;
+let customP5 = null;
+
+function handleCustomAnimation(selected) {
+  if (selected === "custom") {
+    if (customP5) customP5.remove();
+    customP5 = new p5(customSketch);
+    customRunning = true;
+  } else {
+    if (customP5) {
+      customP5.remove();
+      customP5 = null;
+    }
+    customRunning = false;
+  }
+}
+
+
+
+
+function changeAnimation() {
+  const select = document.getElementById('animationSelect');
+  const choice = select.value;
+  currentAnimation = choice;
+
+  handleCustomAnimation(choice);
+}
+
+
+
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      setupOsc();
+      filteredValue = 0;
+      currentAnimation = 'bouncingCircle';
+      lastOscTime = -10000;
+      circleX = width / 2;
+      circleSpeed = 1;
+
+      birds = [];
+      for (let i = 0; i < 6; i++) {
+        birds.push({
+          x: random(width),
+          y: random(height / 2, height - 100),
+          speed: random(1.5, 3),
+          flapOffset: random(TWO_PI),
+          color: color(random(100, 255), random(100, 255), random(100, 255))
+        });
+      }
+
+      clouds = [
+        {x: 100, y: 60},
+        {x: 300, y: 100},
+        {x: 600, y: 50}
+      ];
+    }
+
+    function draw() {
+      if (currentAnimation === 'custom') {
+        // Let sketch.js handle its own drawing
+        return;
+      }
+      const now = millis();
+      const oscActive = now - lastOscTime < oscTimeout;
+
+      const fallback = map(sin(now * 0.001), -1, 1, 0.2, 0.8);
+      const incoming = oscActive ? sensorValue : fallback;
+
+      const useFilter = document.getElementById('filterToggle').checked;
+      if (useFilter) {
+        filteredValue = lerp(filteredValue, incoming, 0.05);
+      } else {
+        filteredValue = incoming;
+      }
+
+      if (calibrating) {
+        if (filteredValue < minVal) minVal = filteredValue;
+        if (filteredValue > maxVal) maxVal = filteredValue;
+
+        if (millis() - calibrationStartTime > 30000) {
+          calibrating = false;
+          document.getElementById('calibrateButton').innerText = "Calibrate";
+          console.log(`Calibration finished. Min: ${minVal}, Max: ${maxVal}`);
+        }
+      }
+
+      document.getElementById('sensor').innerText = filteredValue.toFixed(3);
+      document.getElementById('min').innerText = minVal.toFixed(3);
+      document.getElementById('max').innerText = maxVal.toFixed(3);
+
+      if (currentAnimation && animations[currentAnimation]) {
+        animations[currentAnimation]();
+      }
+      
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      circleX = width / 2;
+    }
+
+    function scaleValue(minOut, maxOut) {
+      if (!isFinite(minVal) || !isFinite(maxVal) || minVal === maxVal) {
+        return (minOut + maxOut) / 2;
+      }
+      const v = map(filteredValue, minVal, maxVal, 0, 1);
+      return constrain(lerp(minOut, maxOut, v), minOut, maxOut);
+    }
+  </script>
+  <script src="sketch.js"></script>
+
+</body>
+</html>
